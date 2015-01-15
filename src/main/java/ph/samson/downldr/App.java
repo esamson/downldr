@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +61,7 @@ public class App {
             log.error("{} failures encountered. Check logs.", failures);
         }
 
+        downloader.stop();
         log.info("Done.");
     }
 
@@ -69,21 +71,24 @@ public class App {
 
     private static class Downloader implements Action1<PhotoPost> {
 
-        private final ArrayList<Future<File>> downloads;
-
-        public Downloader() {
-            this.downloads = new ArrayList<>();
-        }
         private final ExecutorService executor
                 = Executors.newFixedThreadPool(10);
+        private final ArrayList<Future<File>> downloads = new ArrayList<>();
+        private AtomicInteger total = new AtomicInteger();
+        private AtomicInteger done = new AtomicInteger();
+
+        public Downloader() {
+        }
 
         @Override
         public void call(PhotoPost post) {
             final String prefix = new DateTime(post.getTimestamp() * 1000)
                     .toString("yyyy-MM-dd-HHmmss-");
             for (Photo photo : post.getPhotos()) {
+                total.incrementAndGet();
                 final String url = photo.getOriginalSize().getUrl();
-                Future<File> download = executor.submit(new Callable<File>() {
+                Future<File> download;
+                download = executor.submit(new Callable<File>() {
 
                     @Override
                     public File call() throws Exception {
@@ -93,6 +98,9 @@ public class App {
                             Path target = new File(prefix + url.substring(
                                     url.lastIndexOf("/") + 1)).toPath();
                             Files.copy(is, target);
+                            int progress = done.incrementAndGet();
+                            log.info("Downloaded ({} / {}): {}",
+                                    progress, total, target);
                             return target.toFile();
                         } catch (IOException ex) {
                             log.error("Download failure: " + url, ex);
@@ -107,6 +115,15 @@ public class App {
 
         public ArrayList<Future<File>> getDownloads() {
             return downloads;
+        }
+
+        public void stop() {
+            executor.shutdown();
+            try {
+                executor.awaitTermination(1, TimeUnit.MINUTES);
+            } catch (InterruptedException ex) {
+                log.error("Interrupted waiting for Downloader", ex);
+            }
         }
     }
 }
