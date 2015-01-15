@@ -5,7 +5,6 @@ package ph.samson.downldr;
 
 import com.tumblr.jumblr.types.Photo;
 import com.tumblr.jumblr.types.PhotoPost;
-import com.tumblr.jumblr.types.PhotoSize;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -18,11 +17,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import rx.Observable;
 import rx.functions.Action1;
-import rx.functions.Func1;
 
 public class App {
 
@@ -43,43 +42,13 @@ public class App {
         String consumerSecret = "OL6ZXpDf9doA2KnNpZ1pyGh7Lw5E9wKSvfOhI2aQezVKF58JLR";
         String blogName = args[0];
 
-        final ArrayList<Future<File>> downloads = new ArrayList<>();
+        Downloader downloader = new Downloader();
         Observable.create(posts(consumerKey, consumerSecret, blogName))
                 .ofType(PhotoPost.class)
-                .flatMap(photos())
-                .map(originalSize())
-                .map(urls())
-                .subscribe(new Action1<String>() {
-
-                    private final ExecutorService executor
-                    = Executors.newFixedThreadPool(10);
-
-                    @Override
-                    public void call(final String url) {
-                        Future<File> download = executor.submit(new Callable<File>() {
-
-                            @Override
-                            public File call() throws Exception {
-                                log.debug("downloading {}", url);
-                                try (BufferedInputStream is = new BufferedInputStream(
-                                        new URL(url).openStream())) {
-                                            Path target = new File(url.substring(
-                                                            url.lastIndexOf("/") + 1)).toPath();
-                                            Files.copy(is, target);
-                                            return target.toFile();
-                                        } catch (IOException ex) {
-                                            log.error("Download failure: " + url, ex);
-                                            throw ex;
-                                        }
-                            }
-                        });
-
-                        downloads.add(download);
-                    }
-                });
+                .subscribe(downloader);
 
         int failures = 0;
-        for (Future<File> download : downloads) {
+        for (Future<File> download : downloader.getDownloads()) {
             try {
                 File f = download.get(10, TimeUnit.MINUTES);
             } catch (Exception ex) {
@@ -94,35 +63,50 @@ public class App {
         log.info("Done.");
     }
 
-    private static Func1<PhotoSize, String> urls() {
-        return new Func1<PhotoSize, String>() {
-            @Override
-            public String call(PhotoSize t1) {
-                return t1.getUrl();
-            }
-        };
-    }
-
-    private static Func1<Photo, PhotoSize> originalSize() {
-        return new Func1<Photo, PhotoSize>() {
-            @Override
-            public PhotoSize call(Photo t1) {
-                return t1.getOriginalSize();
-            }
-        };
-    }
-
-    private static Func1<PhotoPost, Observable<Photo>> photos() {
-        return new Func1<PhotoPost, Observable<Photo>>() {
-            @Override
-            public Observable<Photo> call(PhotoPost t1) {
-                return Observable.from(t1.getPhotos());
-            }
-        };
-    }
-
     private static Posts posts(String consumerKey, String consumerSecret, String blogName) {
         return new Posts(consumerKey, consumerSecret, blogName);
     }
 
+    private static class Downloader implements Action1<PhotoPost> {
+
+        private final ArrayList<Future<File>> downloads;
+
+        public Downloader() {
+            this.downloads = new ArrayList<>();
+        }
+        private final ExecutorService executor
+                = Executors.newFixedThreadPool(10);
+
+        @Override
+        public void call(PhotoPost post) {
+            final String prefix = new DateTime(post.getTimestamp() * 1000)
+                    .toString("yyyy-MM-dd-HHmmss-");
+            for (Photo photo : post.getPhotos()) {
+                final String url = photo.getOriginalSize().getUrl();
+                Future<File> download = executor.submit(new Callable<File>() {
+
+                    @Override
+                    public File call() throws Exception {
+                        log.debug("downloading {}", url);
+                        try (BufferedInputStream is = new BufferedInputStream(
+                                new URL(url).openStream())) {
+                            Path target = new File(prefix + url.substring(
+                                    url.lastIndexOf("/") + 1)).toPath();
+                            Files.copy(is, target);
+                            return target.toFile();
+                        } catch (IOException ex) {
+                            log.error("Download failure: " + url, ex);
+                            throw ex;
+                        }
+                    }
+                });
+
+                downloads.add(download);
+            }
+        }
+
+        public ArrayList<Future<File>> getDownloads() {
+            return downloads;
+        }
+    }
 }
