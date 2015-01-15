@@ -8,6 +8,8 @@ import com.tumblr.jumblr.types.PhotoPost;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,13 +18,13 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import rx.Observable;
 import rx.functions.Action1;
+import static java.util.concurrent.TimeUnit.*;
 
 public class App {
 
@@ -51,9 +53,10 @@ public class App {
         int failures = 0;
         for (Future<File> download : downloader.getDownloads()) {
             try {
-                File f = download.get(10, TimeUnit.MINUTES);
+                File f = download.get(10, MINUTES);
             } catch (Exception ex) {
                 failures += 1;
+                log.error("Download failure", ex);
             }
         }
 
@@ -93,19 +96,33 @@ public class App {
                     @Override
                     public File call() throws Exception {
                         log.debug("downloading {}", url);
+                        Path target = new File(prefix + url.substring(
+                                url.lastIndexOf("/") + 1)).toPath();
+                        long start = System.nanoTime();
+
                         try (BufferedInputStream is = new BufferedInputStream(
                                 new URL(url).openStream())) {
-                            Path target = new File(prefix + url.substring(
-                                    url.lastIndexOf("/") + 1)).toPath();
                             Files.copy(is, target);
-                            int progress = done.incrementAndGet();
-                            log.info("Downloaded ({} / {}): {}",
-                                    progress, total, target);
-                            return target.toFile();
                         } catch (IOException ex) {
-                            log.error("Download failure: " + url, ex);
-                            throw ex;
+                            throw new IOException(
+                                    "Failed downloading " + url, ex);
                         }
+
+                        long finish = System.nanoTime();
+                        int progress = done.incrementAndGet();
+                        long millis = NANOSECONDS.toMillis(finish - start);
+
+                        File targetFile = target.toFile();
+                        long bytes = targetFile.length();
+                        BigDecimal kBps = new BigDecimal(bytes).divide(
+                                new BigDecimal(1024), 2, RoundingMode.UP)
+                                .divide(new BigDecimal(millis).divide(
+                                                new BigDecimal(1000), 2, RoundingMode.UP),
+                                        2, RoundingMode.UP);
+                        log.info("{}\n    {} bytes in {} ms ({} kB/s)    {}/{}",
+                                target, bytes, millis, kBps, progress, total);
+
+                        return targetFile;
                     }
                 });
 
@@ -120,7 +137,7 @@ public class App {
         public void stop() {
             executor.shutdown();
             try {
-                executor.awaitTermination(1, TimeUnit.MINUTES);
+                executor.awaitTermination(1, MINUTES);
             } catch (InterruptedException ex) {
                 log.error("Interrupted waiting for Downloader", ex);
             }
